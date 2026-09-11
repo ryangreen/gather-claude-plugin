@@ -1,0 +1,9 @@
+{
+  "name": "gather",
+  "description": "Build GatherScript and p5 games with the Gather Platform — connects MCP and teaches engine-aware authoring, preview, release, and credits.",
+  "version": "1.2.0",
+  "author": {
+    "name": "Gather Game Studio"
+  },
+  "homepage": "https://gathergamestudio.com"
+}
