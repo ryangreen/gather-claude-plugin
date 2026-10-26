@@ -1,0 +1,819 @@
+# GatherScript syntax
+
+Enough to write correct script without guessing. For anything not here, use
+a `searchDocs` query — an exact keyword, or the question in plain words — `listDocPages` → `getDocToc` → `getDocSection` (reference), or
+`searchKnowledgeByTag` (working recipes).
+
+## Section anatomy
+
+A script is Markdown-ish sections. Every section is `# Type: Name`, followed by
+`key: value` property lines until the next header.
+
+```gatherscript
+# Entity: Player
+// The character the player drives around
+shape: box
+color: #4ade80
+position: 400, 300
+size: 32
+speed: 200
+```
+
+Section types: `Entity`, `Collection`, `Observer`, `Template`, `Input`,
+`Config`, `UI`, `Data`.
+
+- Property keys are case-insensitive; values keep their case.
+- Values are numbers, strings, or comma-separated lists (`frames: 4, 5, 6, 7`).
+- Inline constraints are `x: 100, range 0 to 800` (add `, wrap` to wrap instead of clamp). Curly braces are not a range spelling and constrain nothing.
+- Comments are `//` or `/* ... */`. A trailing `size: 36  # note` is a
+  comment too, but write `//`: a `#` that starts a line is a section header.
+- A `//` line saying what a section is for is the cheapest thing you can do
+  for the creator. Over MCP, a section's `comment` field is written as those
+  `//` lines. `comment:` is NOT a comment: it is a stored property, and in
+  `# Input` it makes a control called `comment`.
+- `tags:` groups the section for the Script Outline — see below.
+
+## System tags — organize a one-script game
+
+A whole game usually lives in one script, so `tags:` on a section is how a
+creator later filters the Script Outline down to the parts that belong together.
+Tag every section you write.
+
+**Tag by area of responsibility — the game system a section serves, not its type
+or a low-level mechanic.** The outline already groups by type, so `tags: observer`
+is noise. Ask: "if this part of the game broke, which sections would I open
+together?" Every section in that answer shares one tag. A `combat` filter should
+surface the combat entity, the collections its observers watch, those observers,
+the projectile template, and the combat HUD — the whole slice, at once.
+
+```gatherscript
+# Entity: Player
+shape: box
+tags: player
+
+# Collection: Players
+where: tags includes player
+tags: player
+
+# Collection: Bullets
+where: kind is bullet
+tags: combat
+
+# Observer: FireGun
+watches: Players
+tags: combat, input        // bridges two systems — a second tag is fine
+```
+
+Rules that keep the filter useful:
+
+- **Every section gets at least one system tag.** An untagged section is
+  invisible to every filter — it is the noise.
+- **Prefer one primary owner per section.** Add a second tag only when a section
+  genuinely bridges two systems.
+- **Reuse a tag before inventing one.** Synonyms (`foe` vs `enemy` vs `enemies`)
+  split one system across two filters. Pick one word per system and stay
+  consistent within the script.
+- **Keep the set small** — a handful of lowercase nouns matching how a player
+  would name the game's parts (`player`, `enemies`, `combat`, `scoring`,
+  `spawning`, `world`, `hud`, `input`, `audio`), drawing from the game's own
+  domain first (`asteroids`, `paddle`, `bricks`). If every section has a unique
+  tag, nothing groups.
+- **Tag the Template, not each spawn.** Spawned instances inherit their
+  template's tags automatically.
+
+Case-insensitive, comma-separated. `tags:` doubles as normal entity tag data
+(so `where: tags includes player` still filters at runtime).
+
+## Data — state that doesn't render
+
+`# Data: Name` holds values instead of drawing. Every property lands in `custom`
+(even `x` / `color`); no `renderable`, so it never appears on the canvas. Still a
+real entity — filter it, name it, iterate it. Use it instead of a propless
+`# Entity:` whenever you mean "hold data."
+
+```gatherscript
+# Data: Backpack
+potions: 22
+## Data: Tools        // children are written with their kind: ## Data: Name
+swords: 1
+
+# Data: Country       // repeat a name → a group
+name: USA
+pop: 331
+# Data: Country
+name: Canada
+pop: 39
+```
+
+- **Path access** (read AND write): `Backpack.potions`, `Backpack.Tools.swords`
+  (implicit child hop), `Country.first.pop` / `Country.1.pop` (group, 0-based),
+  `entity.parent.pop`. Missing child / bad index → `0`.
+- **Iterate**: `for: c is Country` (or `for: c in Country`) loops a collection or a named group, and `for: row is Arcade.rows` (also `Shop.Shelf.items`, `entity.data.items`, `bag.items`) loops a list a record holds, running zero times if it is not a list; each `c`
+  is that entity (`c.pop`), so you can process or spawn per row. The variable WRITES too —
+  `c.pop += 1` updates that entity and the rest of the iteration sees it. A variable bound
+  to a number (`for: i is 1 to 5`) diagnoses on `i.prop = …` instead of writing anywhere.
+- **Filter data**: `where: parent is Backpack` (children of a parent);
+  `where: pop gt config.limit` compares to a LIVE config value (never cached).
+- **Import a file**: `# Data: Country` + `source: countries.csv` → a `Country`
+  group (CSV / JSON array / MD table → rows; JSON object / shorthand → children);
+  `format:` pins it; inline props are per-row defaults.
+
+## Saving state — only `# Data:` is saved
+
+Persistent state is a `# Data:` section with `store:` (`player` = each player's
+own, `room` = shared by the room, `game` = shared by every room). An entity links
+it with `data:` and reads/writes it as `entity.data.x`. What is on `entity.data`
+survives a reload; what is on the entity (position, colour, text) does not.
+`store:` on an `# Entity:`, `# Template:` or ordinary `# UI:` panel is an ERROR —
+never write it there. A cross-game value is a `# Namespace:`, not a `store:` key.
+(A leaderboard `# UI:` panel's `store:` is a board key and stays.)
+
+```gatherscript
+# Data: PlayerData        // stored: a shape + starting values; makes no record by itself
+store: player
+hadStarter: 0
+## Data: Room             // child kind, made with its parent; bare `## Room` is rejected
+store: room
+visits: 0
+
+# Data: Pet
+store: player
+species: cat
+level: 1
+view: none                // a reference to the on-screen view: never saved
+
+# Entity: Hero
+avatar: true
+data: PlayerData          // an avatar's own record loads when it spawns
+
+# Template: PetView
+data: Pet                 // each PetView carries a Pet record
+shape: circle
+size: 16
+
+# Collection: Heroes
+where: avatar is true
+
+# Observer: Starter       // create records in ONE observer...
+watches: Heroes
+every: tick
+do:
+  if: not entity.data.hadStarter
+    entity.data.hadStarter = 1
+    spawn: Pet            // every line in a stored kind's spawn is data
+      species: dog        // owned by the avatar's player; `owner: none` makes it shared
+
+# Observer: ShowPets      // ...and show them in ANOTHER
+watches: Heroes
+every: tick
+do:
+  for: p is Pet
+    if: p.owner == entity.player and not p.view
+      spawn: PetView
+        x: entity.x + 24
+        data: p           // link the existing record (`data.species: dog` would make a new one)
+      p.view = spawned    // "already shown" is a reference, never a saved flag
+```
+
+- **Records are made by rules.** A `# Data:` with `store:` is a shape; no record exists until `spawn: Pet` (or a link makes one: an avatar's `data:`, or an authored entity's `data:` on a `room`/`game` kind, which links the scope's one record). Child kinds are made automatically with their parent. Inside `spawn:` of an entity template with `data: Kind`, `data.<prop>:` writes the new record and a plain `<prop>:` writes the entity.
+- **Ownership.** A record spawned by a rule running for an avatar (or by a UI press) belongs to that player; `owner: target.player` / `owner: none` override. `p.owner == entity.player` picks your records. A `store: player` record with no owner warns.
+- **Delete** with `despawn: entity.data` or `despawn: p`; `despawn: entity` removes only the view. Remove views of deleted records with `if: not entity.data` (true exactly while the record is alive).
+- **Never create a record and its show rule together** — a view spawned with a new record (`data.species: dog`) beside a show rule gets a second view next tick. Create in one observer, show in another.
+- **References in a save**: a record is saved by id, a uniquely named authored entity by name, an avatar by player; any other reference (a spawned view) reads `none` after a reload.
+- Write through a loop binding too: `for: h is Heroes` then `h.data.potions += 1`. A value takes a range hint like any property (`coins: 0, range 0 to 9999`).
+- A child record is read through a loop (`for: r is Room` then `r.owner == entity.player`), not `entity.data.Room.x`.
+- Signed-out players keep progress on their own device only; saves flush about once a second; a record holds about 1 KB.
+- **A record several games share** (a pet that follows the player) is a `kind: records` namespace, not a `store:` value. The creator copies its kinds into a game with **Build on** (Sharing → Namespaces): a locked `# Data: Pet` with `from: ns_pets` and `store: ns_pets`. Never type or edit that copy; the game's own fields go below a blank line after it and are not saved in the namespace. Link and write it like any stored kind (`data: Pet`, `entity.data.level += 1`). Only the owner's games and those ticked **Can write** (`access.write`) may change the records; in any other published game they load as saved and every write, spawn or despawn of them does nothing, so keep that game's changing state on the entity.
+
+## Leaderboards are data
+
+<!-- generated:leaderboard-record — do not edit; npm run skill:sync -->
+
+A leaderboard is a read-only `# Data:` record whose `source:` is `gather.leaderboard.highest`, `.lowest`, `.shortest` or `.longest` (the time boards label their scores as times). `limit:` is the row count (1 to 100, default 10); `scope:` is `game` (default), `room` or `player`; `key:` is an optional literal board key. Submit with `leaderboard: TopRuns, score` as before. Any other authored property on the record, and any write to its returned data, `store:`, `reset:` or `despawn:` on it, is an editor error.
+
+| Field | Type | Notes |
+|---|---|---|
+| `rows` | list | Read-only, at most `limit` long, index from 0: `TopRuns.rows[0].name` in a rule, `$TopRuns.rows.0.name` in text |
+| `rows[i].rank` | number | |
+| `rows[i].name` | text | |
+| `rows[i].score` | number | There is no per-row icon |
+| `page`, `sort`, `tag` | number, text, text | Mutable query; tag lists have only `page` |
+| `total`, `hasMore` | number, true/false | Read-only matching count and next-page availability |
+| `rows.length` | number | Rows on this page |
+| `me.rank`, `me.best` | number | Per viewer: each player reads their own |
+| `updatedAt` | number | Session `time` in seconds when the values last changed |
+| `stale` | true/false | True while Gather cannot be reached, and in IDE play; the last values stay |
+
+Your own submission shows at once; other players' scores arrive about once a second. For the canned panel, link the record with `data:` and skin its parts: `template:` (the panel), `item.template:` (each row), `header.template:` (the title band), `next.template:` and `previous.template:` (paging), `icon:` with `icon.frame:` (`frame:` is the panel's own), `page:` (rows per page). A board with a panel sprite, a row template with sprite + width + height, a header template with a sprite, or a page-button template with sprite + width + height is drawn by the core, covers the game like a menu and pages per player; otherwise it keeps the preset look. A `# UI` board with no `# Data:` still works (readable as `Board.data.rows`). For your own board, read `rows` from screen-space entities:
+
+```gatherscript
+# Data: TopRuns
+source: gather.leaderboard.highest
+limit: 3
+
+# Entity: FirstPlace
+space: screen
+shape: text
+text: "$TopRuns.rows.0.name  $TopRuns.rows.0.score"
+position: 20, 20
+```
+
+<!-- /generated:leaderboard-record -->
+
+## Games are data
+
+<!-- generated:games-record — do not edit; npm run skill:sync -->
+
+A list of Gather games is a read-only `# Data:` record whose `source:` is `gather.creator.games` (this game's creator's listed games), `gather.game.mods` (published games built on this game), `gather.games` (every listed game) or `gather.games.tags` (the popular tags). `limit:` is the row count (1 to 100, default 10); `sort:` is `popular`, `newest`, `rating`, `featured` (default `popular`; `featured` puts featured games first, then by plays; not on `gather.games.tags`); `tag:` lists only games with that literal tag (not on `gather.games.tags`). Any other property on the record, and any write, `store:`, `reset:` or `despawn:` on it, is an editor error. Online lists never include the hub itself; only listed, unsuspended games appear, and other creators' games only once they have passed review.
+
+For an installed arcade, use `gather.games.local` (installed games) or `gather.games.local.tags` (their tags and counts). These are filled by the native launcher and work offline. A complete local page, including an empty library, sets `stale: false` even without internet. The browser never fetches local lists from Gather's online service. A local row's `code` is an opaque destination that only the active arcade launcher can open with `link: entity.door`; it is never a filename.
+
+Every games source holds one small page: `limit:` is rows per page (1 to 100, default 10), and `page:` starts at 0 (whole numbers up to 1,000,000). Rules can write `Arcade.page += 1` to request the next page, or `Arcade.page = 0` to return to the first. On a game list, `Arcade.tag = chosenTag` filters the shelf and `Arcade.sort = newest` changes its order; either change resets the page to 0. Tag lists accept only page changes. A changed query immediately sets `stale` true while keeping the old rows. Wait for `stale` false before opening a door. Responses for an older page or filter are ignored. `total` counts visible matching games (or tags), and `hasMore` says whether another page exists. Rows, `total`, `hasMore`, `updatedAt` and `stale` remain read-only; queries survive snapshots and restarts. Online totals count after visibility checks, so hidden games never create gaps.
+
+| Field | Type | Notes |
+|---|---|---|
+| `rows` | list | Read-only, at most `limit` long, index from 0: `Arcade.rows[0].title` in a rule, `$Arcade.rows.0.title` in text |
+| `rows[i].code` | text | The share code: `link: entity.door` takes it |
+| `rows[i].title` | text | Up to 48 characters |
+| `rows[i].tagline` | text | Up to 120 characters |
+| `rows[i].creator.name` | text | Up to 32 characters; empty if the creator has no display name |
+| `rows[i].tags` | list | Up to 8 tags |
+| `rows[i].plays` | number | |
+| `rows[i].rating` | number | 0 to 5; 0 means unrated |
+| `rows[i].identity`, `rows[i].engine`, `rows[i].release` | text | Optional stable game identity, engine and release labels |
+| `rows[i].installed`, `rows[i].playable` | true/false | Optional installation and launch readiness flags |
+| `rows[i].reason` | text | Optional explanation when a game cannot play |
+| `rows[i].cover`, `rows[i].gallery` | text, list of text | Optional host sprite handles; set `sprite` to one to show the artwork |
+| `rows[i].contentHash`, `rows[i].packageVersion`, `rows[i].irVersion`, `rows[i].certification` | text, number, number, text | Optional whole-cartridge SHA256, versions and verified status (unsigned, valid, untrusted or invalid); source hashes and manifest flags do not certify a package |
+| `rows[i].tag`, `rows[i].games` | text, number | On `gather.games.tags` or `gather.games.local.tags` instead of the game fields: a tag and how many listed games carry it |
+| `rows.length` | number | |
+| `updatedAt` | number | Session `time` in seconds when the rows last changed; 0 until the first delivery |
+| `stale` | true/false | True until the list has been fetched, and while Gather cannot be reached; the last rows stay |
+
+Optional row fields can be absent on both online and local lists; keep scripts useful without them. A launcher includes unsupported installed engines too, with `playable: false` and a `reason`.
+
+In the editor's Play a creator's hub lists their games as them, so they see the games they are building while they edit. Rows refresh when a game is published and every few minutes. Before the first delivery `rows` is empty and text that reads it is blank, so show a "Loading" line while `updatedAt == 0` and a different one when `rows.length == 0` after it. For a hub, loop the rows with `for: row is Arcade.rows` (a list a record holds works as a `for:` source; a non-list runs zero times), spawn a door per row and give it the code. A screen-space door that a rule clicks (`CLICKED()`) is reachable by Tab and pressed by Enter, and its `text:` or `label:` is its accessible name. `link:` offers the player the choice box (join, watch, play solo):
+
+```gatherscript
+# Data: Arcade
+source: gather.creator.games
+limit: 6
+
+# Template: Door
+space: screen
+shape: box
+size: 400, 48
+kind: door
+door: none
+
+# Entity: Lobby
+shape: box
+visible: false
+seen: -1
+
+# Collection: Doors
+where: kind is door
+
+# Observer: BuildDoors
+watches: Lobby
+every: tick
+do:
+  if: Arcade.updatedAt != entity.seen
+    entity.seen = Arcade.updatedAt
+    for: old is Doors
+      despawn: old
+    for: row is Arcade.rows
+      spawn: Door
+      spawned.door = row.code
+      spawned.text = row.title
+
+# Observer: PressDoor
+watches: Doors
+every: tick
+do:
+  if: CLICKED()
+    link: entity.door
+```
+
+<!-- /generated:games-record -->
+
+## Players and controls
+
+<!-- generated:players-controls — do not edit; npm run skill:sync -->
+
+**Saved, rebindable controls.** Name the input section and add `store: player` (`# Input: Controls`, then `store: player`; only `player`, only on a NAMED profile) and each seated player keeps their own rebinds; a save holds only what they changed, so a default you ship later still reaches players who never rebound it. `Controls.jump` is a button's sources as a list, `Controls.move.xneg` one axis direction, `Controls.move` the directions together; `Controls.enabled` is the profile switch. `Controls` is the controls of the player the rule runs for (an avatar's player, the presser of a `# UI` item, the one player solo); a rule that runs for no player in a room of 2+ reads none and its `rebind:` warns once. In menu text use `$Controls.jump.first`. `rebind: Controls.jump, input.last` sets the keyboard, pad or mouse key of that button to the new one and keeps the other devices' keys (jump keeps `gamepad.south`); `none` does nothing, so run it every tick on a capture screen; a chat word or unknown name is refused. `reset: Controls.jump` / `reset: Controls` restore the defaults. A plain `Controls.jump = …`, `store: room` on controls, or `store:` on an unnamed `# Input` is an editor error. `input.last` is the key, pad button or mouse button pressed THIS tick, spelled as a binding source (`k`, `space`, `arrowleft`, `gamepad.south`, `mouse.right`), or `none`; never Tab, Escape, chat words or a shown menu's keys, and `none` on the tick a press opened the screen. A bare `k` is a variable, not a key, so test `input.last != none` or keep it (`entity.lastKey = input.last`); cancel with `key.escape.pressed`. Build the rebind screen as a `# UI` menu (a menu is always pad-navigable): pressing a row sets `Capture.picking`, hides the menu and shows a prompt; an observer runs the `rebind:` and shows the menu again when `input.last != none`; a "Reset all" row runs `reset: Controls`. Saved controls move a 2 to 4 player game to snapshot netplay (more bandwidth); say so. See `public/examples/rebind-controls.gather`.
+
+**Who is in the room.** A `# Data:` with `source: gather.room.players` (no other keys; read-only) holds `rows` (seated players by seat, then up to 16 spectators: `seat` (-1 for a spectator), `name` (the room's handle, up to 32 characters, never an account), `spectator`, `avatar`, `controls`), `me` (your own row, none for a spectator), `spectators` (a count, past the cap too), `updatedAt` and `stale`. Solo there is one row. Read `Room.rows.length`, `$Room.me.name` in text, or loop `for: p is Room.rows`.
+
+```gatherscript
+# Input: Controls
+store: player
+jump: Space, gamepad.south
+
+# Data: Room
+source: gather.room.players
+
+# UI: Who
+style: hud
+layout: top-left
+
+- "You: $Room.me.name"
+- "Players here: $Room.rows.length"
+```
+
+<!-- /generated:players-controls -->
+
+## Pad players and on-screen buttons
+
+With no menu open, a pad's d-pad moves focus between on-screen buttons
+(`space: screen` entities a rule clicks with `CLICKED()`, and skinned HUD
+buttons) and south (A) presses the focused one. It is on only while the game
+binds or reads none of `gamepad.dpad.*`, `gamepad.south`, `gamepad.up`-style
+names or `key.any`. A binding with no pad source is given one (the first
+action gets south, the first direction the d-pad), and that counts too, so
+in menu-ish screens name free pad buttons yourself (`fire: Space,
+gamepad.east`). Style a screen
+button with `if: HOVERING() or entity.isFocused` (a screen entity gets
+`isHovering` only from `HOVERING()`).
+
+## UI that everyone can use
+
+Presets (`menu`, `dialog`, `confirm`, `alert`, `toast`, `hud`, `leaderboard`) and
+HUD widgets are drawn by Gather itself, so they look the same in the browser,
+in rendered frames and on a console. Write the words and let the box grow to fit
+them; a title or button too long for the pixel face falls back to Roboto, then
+ends in "…" (a screen reader still hears all of it). Mark a HUD value a blind
+player should hear change (`live: true` on a countdown or a health reading); an
+unmarked value stays silent.
+
+Only what a player can press looks like a button. In a menu, dialog, confirm or
+alert, an item with nothing to run (no `do:`, no commands) is a plain label:
+stack "Your score", the score and "Best" as labels above one "Try again" button.
+To restyle a preset frame, write `background:` and/or `border:` on the panel or
+item (a colour or `none`); the one you leave out keeps the preset colour, so
+`border: none` keeps a button's fill without its outline.
+
+A player can ask for reduced motion (an account setting, else their device's),
+fixed when they join. Gather's own hover fade and toast slide then go still.
+Guard your own bobs, slides and shakes: `if: entity.player.reducedMotion` in an
+avatar's rule (`$player.reducedMotion` in text). A menu item has no seat, so a
+rule over menu items reads the avatar instead (`if: Hero.player.reducedMotion`).
+
+## Config is a live store
+
+`# Config` params are read and written at runtime, not frozen. In `do:` / `if:`
+expressions `config.name` re-reads the current value each tick and
+`config.name = …` writes it (persists, seen by later reads); `$name` is an alias
+for `config.name` there. In a component initializer (`position: $startX`) the
+value is read ONCE at spawn — a later config write won't move the entity.
+
+## Cameras — what part of the world is on screen
+
+`# Camera: Name` is an entity that controls what's drawn and where. No camera
+at all ⇒ the whole canvas, centred, exactly like every script before cameras
+existed — only add one for zoom, split-screen, a minimap, or a cut.
+
+```gatherscript
+# Camera: P1
+position: 20, 30     // CENTRE of what's visible, in world units
+size: 40              // visible width in world units — height derives from
+viewport: 0, 0, 400, 600   // the viewport's aspect, so the picture never stretches
+```
+
+- `position` = centre in world/coordinate units (same as any entity's `x`/`y`).
+- `size`/`width`/`height` = the visible RECTANGLE, in world units — never
+  pixels. Width-only derives height from the viewport's aspect ratio.
+- `viewport: x, y, w, h` = where it draws on the CANVAS, in design pixels
+  (the `canvas: 800, 600` space); omitted = the whole canvas.
+- `viewport: auto` tiles every VISIBLE `auto` camera evenly by count (1 full,
+  2 halves, 3–4 quadrants, more a grid) — put it on a `# Template:` to spawn
+  one camera per joining player instead of hand-authoring N cameras.
+- `z` orders overlapping viewports (a minimap over the main view).
+- No `active:` — cutting between cameras is toggling `visible:`, same as any
+  entity. `view:` restricts a camera to one view (`view: stream`).
+- A camera is a plain entity, so a follow cam is just an observer copying a
+  target's `x`/`y` onto it every tick — there is no camera-specific command.
+- The pointer is camera-relative: `mouse.x`/`mouse.y` and `HOVERING()` /
+  `DISTANCE(mouse)` resolve through whichever camera's viewport the pointer is
+  inside. UI stays screen-space, on top of every camera.
+
+## Input — named bindings, and the raw devices
+
+`# Input` gives an action a game-friendly name. There is no `type:` line — the
+**suffix decides** what the binding is:
+
+```gatherscript
+# Input
+jump: Space                                  // no suffix → button
+thrust.neg: s                                // .neg / .pos → 1D axis
+thrust.pos: w
+move.xneg: ArrowLeft, a                      // .xneg/.xpos/.yneg/.ypos → 2D axis
+move.xpos: ArrowRight, d
+move.yneg: ArrowUp, w
+move.ypos: ArrowDown, s
+step.up: ArrowUp                             // .up/.down/.left/.right → 2D axis, a D-pad on phones
+step.down: ArrowDown
+```
+
+`step.up` is the same 2D axis as `step.yneg` (same `step.x`/`step.y`, same pad
+sources) — the spelling only tells a phone to draw a D-pad instead of a stick.
+Use it for grid, hop and menu movement. Every 2D axis answers to both names.
+
+Read them by bare name inside a `do:` block or an `if:`:
+
+| Binding | Reads as |
+|---|---|
+| button | `jump` / `jump.down` (held), `jump.pressed` (this frame only), `jump.released`, `jump.up` (NOT held) |
+| 1D axis | `thrust` — `-1`…`1`; `thrust.neg` / `thrust.pos` are the raw halves |
+| 2D axis | `move.x` and `move.y` — each `-1`…`1`; bare `move` is 1 while any direction is held |
+
+```gatherscript
+do:
+  x += move.x * speed * dt
+  if: jump.pressed
+    vy = -300
+```
+
+A binding that names no `gamepad.*` source of its own is **given one at compile
+time** — the first direction binding gets the left stick, actions get south,
+east, west, north in declaration order — so a keyboard script also answers a
+controller and a phone's on-screen pad. Anything you name yourself wins.
+
+**A game played by touching the screen** (tap targets, drag puzzles, swipes)
+sets `touchcontrols: screen` in `# Config`. Phones then draw no controller,
+just the screen and its menu row, and each tap or drag reaches the game as the
+mouse (`CLICKED()`, `DRAGGING()`, `mouse.x`). Desktop is unchanged, and a player
+can still pick Show controller from the handheld's menu. Use it only when the
+game reads the pointer; otherwise the editor warns that a phone has nothing to
+press.
+
+**Local multiplayer:** name the sections (`# Input: Arrows`, `# Input: WASD`),
+put `controls: Arrows` on the entity, and read `entity.controls.move.x`. One
+observer then drives any number of players with no branching.
+
+**Raw devices** — for a rule that needs one exact input rather than a remappable
+action: `key.<name>.down` / `.pressed` / `.released` (`key.space`, `key.a`,
+`key.arrowleft`, `key.any`), `mouse.x` / `mouse.y` in game coordinates plus
+`mouse.down` / `.pressed` / `.released` and `mouse.left` / `.right`, and
+`gamepad.south` / `.lstick.x` / `.dpad.left` and friends. Every one of these is
+`1` or `0`, so `x += key.d.down * 10` is a whole movement rule.
+
+## Collections
+
+A live query, re-evaluated as component data changes.
+
+```gatherscript
+# Collection: Enemies
+where: kind is enemy and health > 0
+```
+
+`where:` clauses compose with `and` / `or`. Operators are documented — check
+with an exact `searchDocs` query rather than assuming an operator exists.
+
+Every entity and template name is already a collection: `watches: Wall`,
+`OVERLAP(Wall)` and `COUNT(Wall)` need no `# Collection:`. `spawn: Wall` copies
+and tile-map tiles (`keys:` → `W: Wall`) carry their source's name, so they join
+it. `Wall.x` reads the first one named — for an entity key, the original.
+Tiles follow their map entity's switch: `Level.enabled = false` switches the
+level's tiles off, `= true` brings them back. A tile of an entity key starts
+on even if that palette entity is `enabled: false`; a tile of a template key
+follows the template.
+
+### The filter is the switch
+
+Because a collection is re-evaluated live, the idiomatic way to turn a behavior
+on and off is to put the condition in `where:` — an observer over an empty
+collection simply does nothing that tick.
+
+```gatherscript
+# Collection: DeadBirds
+where: entity is Bird and dead is 1
+
+# Observer: RestartGame     // only runs while the bird is actually dead
+watches: DeadBirds
+every: tick
+do:
+  if: key.space.pressed
+    reset: entity
+```
+
+Prefer this over a `stopif:` / `if:` guard at the top of a `do:` block when the
+condition describes *which entities the observer is about* rather than a
+mid-block early-out. It reads like the design doc, and the runtime does the
+filtering for you.
+
+An observer can also be switched off and on as a whole: `enabled: false` on
+the section starts it off, `Gravity.enabled = true` in a `do:` block switches
+it on, `Gravity.enabled = false` off again, and `if: Gravity.enabled` reads it.
+An **entity** has the same switch: `Door.enabled = false` takes it out of every
+collection (see "Switch an entity off" below). `Gravity.enabled = …` switches
+EVERYTHING called Gravity — entity, observer, input and collection alike — so
+don't give an observer an entity's name. To re-arm a one-shot (`every: once`) observer or reset the
+`once:` / `wait:` / `animate:` state inside a `do:` block, use
+`reset: <ObserverName>` (it also puts the observer's switch back as written).
+For a retry / play-again, `reset: all` puts every
+entity back to its starting values; add observer names to re-arm those too
+(`reset: all, Intro`).
+
+## Observers
+
+```gatherscript
+# Observer: Chase
+watches: Enemies
+every: tick
+do:
+  x += DIRECTION(Player).x * speed * dt
+  if: DISTANCE(Player) < 20
+    health -= 1
+```
+
+- `watches:` names a Collection. `every:` is `tick`, `fixedTick`, `lateTick`, or
+  `draw`.
+- The body runs **once per entity** in the collection; `entity` is the current one.
+- `dt` is delta time in seconds. Multiply anything per-second by it.
+
+### Commands in `do:` blocks
+
+Assignment uses operators — `=`, `+=`, `-=`, `*=`, `/=`:
+
+```gatherscript
+x = 5
+score += 10
+```
+
+There is no `set x to 5`. Writing English where an operator belongs is the
+single most common way to produce a script that parses and does nothing.
+
+#### Style: bare properties, not `entity.` everywhere
+
+Inside a `do:` block, a bare property name resolves to the current entity's
+property — on **both** sides of an assignment, in `if:` conditions, in macro
+arguments, and in `spawn:` overrides. Prefer the bare form; it is what makes a
+script read like the design doc it is meant to be.
+
+```gatherscript
+do:
+  gapCenter = RANDOM(gapMin to gapMax)
+  topHeight = gapCenter - gapSize / 2
+  if: topHeight > 0 and dead == 0
+    spawn: Pipe
+      x: spawnX
+      height: topHeight
+```
+
+Keep the explicit `entity.` prefix only where it earns its place:
+
+- **Disambiguation** — the name also exists as an input binding, a global, or a
+  section name (`entity.speed` next to a `speed` binding).
+- **Nested and virtual paths** — `entity.position.x`, `entity.controls.jump.pressed`,
+  `entity.children.first.color`.
+- **Contrast with another entity** — a line that already reads `target.health`
+  or `Players.first.score` is clearer written as `entity.health -= 1`.
+- **`reset:` targets** — `reset: entity`, `reset: entity.vy`.
+
+This is style, not correctness: `entity.x` always works. Uniform `entity.`
+prefixing just makes the arithmetic harder for a human to scan, which is the
+whole point of the language.
+
+Conditions are `if:` lines with **indented** bodies, composed with `and` / `or`,
+optionally followed by `else:`:
+
+```gatherscript
+if: y > 500 and alive
+  y = 0
+  vy = 0
+else:
+  vy += 9.8 * dt
+```
+
+A clause with no comparison in it — `alive` above — is true when its value is
+not zero, so `if: move` asks "is the stick off centre" and `if: not move` asks
+the opposite. Against a **number**, `is` and `==` are the same test and both
+read whatever the name means, input bindings included: `move is not 0` and
+`move != 0` are one question. (Against a **word** they still differ — `state is
+aim` compares the word, `hits == PI` resolves the constant.)
+
+Other commands (`spawn:`, `push:`, `move:`, `accelerate:`, `show:`, `hide:` …)
+exist with their own nesting rules. Look them up before use.
+
+## Macros
+
+UPPERCASE calls, usable inside expressions:
+
+```gatherscript
+x += RANDOM(-1, 1)
+if: DISTANCE(Enemies) < 50
+if: CLICKED()
+```
+
+Common ones: `RANDOM`, `COUNT`, `DISTANCE`, `DIRECTION`, `AIM`, `CLAMP`,
+`OVERLAP`, `TOUCHING`, `PUSHOUT`, `SPEED`, `CLICKED`, `HOVERING`, `GRABBING`,
+`DRAGGING`, `HELD`, `NEXTFRAME`, `CYCLE`.
+Argument shapes vary — search the exact one you want with `searchDocs`.
+
+`CLAMP(value, min, max)` switches on what it is handed: a number is bounded
+directly, and a list with numeric bounds keeps its direction and bounds its
+length — `entity.velocity = CLAMP(entity.velocity, 3, 10)` is a speed cap.
+
+A **generator** macro can also be a property's value on an `# Entity:` or
+`# Template:`, where it resolves once per instance — the template's spawn count,
+the entity's index among entities sharing its name, or a player id on an
+`avatar: true` entity:
+
+```gatherscript
+# Template: Asteroid
+shape: circle
+size: RANDOM(14 to 44)
+color: RANDOM(grey, brown, white)
+lane: STEPCYCLE(100, 200, 4)
+```
+
+`RANDOM`, `CYCLE`, `PINGPONG`, `STEP`, `STEPEVERY`, `STEPCYCLE` and `PERLIN`
+work there; `DEAL` does not. Prefer this over an init observer when each
+instance just needs its own value.
+
+### Collision — `OVERLAP` and the `target` binding
+
+`OVERLAP(Coll)` is 1 while the current entity overlaps any entity in `Coll`. It
+auto-detects the shape: circle if the entity has `radius`, AABB from
+`size` / `width` / `height` otherwise. Explicit forms override that —
+`OVERLAP(Coll, r)` (circle), `OVERLAP(Coll, w, h)` (box), `OVERLAP(mouse)` and
+`OVERLAP(x, y)` (is a point inside me), `OVERLAP(SCREEN)` with its sugar
+`ONSCREEN()` / `OFFSCREEN()` for culling things that flew off the canvas.
+
+`TOUCHING(Coll)` answers the same question from the collision ledger that
+`collide:` / `ground:` / `wall:` write, so inside one observer it does not care
+what order commands ran. Across observers the one with `ground:` / `collide:` /
+`wall:` must run first (phase, then `priority:`, then script order) or the reader
+sees 0; validation warns when it does not. `PUSHOUT(Coll)` returns the `[x, y]` that resolves the overlap.
+
+Both bind **`target`** to the nearest matching entity — readable in the
+condition, the body, and in command arguments:
+
+```gatherscript
+do:
+  if: OVERLAP(Asteroids)
+    for: i is 1 to 2
+      spawn: Asteroid
+        x: target.x                  // inherit what you hit
+        y: target.y
+        width: target.width / 2.0
+    despawn: target
+    despawn: entity
+```
+
+Put `OVERLAP(...)` first when you `and` it with a test on the thing you hit —
+`and` runs left to right, so `if: OVERLAP(Pots) and target.frame is 1` works and
+the reverse order does not. Reading `target` with no overlap bound is a no-op
+plus a runtime diagnostic.
+
+### Math functions — trig, rounding, constants
+
+Uppercase like macros, usable anywhere an expression is: `SIN`, `COS`, `TAN`,
+`ASIN`, `ACOS`, `ATAN`, `ATAN2(y, x)`, `RADIANS`, `DEGREES`, `ABS`, `SQRT`,
+`POW`, `MIN`, `MAX`, `CEIL`, `FLOOR`, `ROUND`, `LOG`, `EXP`, `SIGN`. Constants:
+`PI`, `TWO_PI`, `HALF_PI`. Operators are `+ - * / %` (or `mod`) and `^`.
+
+`none` is no value: `entity.best = none` empties a property (a `# Data:` field
+saves empty), `if: entity.best == none` tests for it, and it is never `0` or
+`""`. On a built-in property it keeps its meaning (`color = none` draws
+nothing). A removed remembered entity is `none` too (still `0` in arithmetic).
+
+**Rotation and `AIM()` are in degrees; trig is in radians.** Convert at that
+boundary or the ship points the wrong way:
+
+```gatherscript
+# Input
+steer.neg: a                 // 1D axis, -1 … 1
+steer.pos: d
+thrust: w                    // button
+
+# Observer: FlyShip
+watches: Ships
+every: tick
+do:
+  rotation += steer * 180 * dt                         // steering, in degrees
+  if: thrust
+    vx += COS(RADIANS(rotation)) * accel * dt          // accelerate along the nose
+    vy += SIN(RADIANS(rotation)) * accel * dt
+  heading = DEGREES(ATAN2(vy, vx))                     // and back again
+```
+
+For the common cases you rarely need the trig at all: `push: AIM(entity.rotation) at 300`
+fires along a heading, `entity.rotation = AIM(mouse)` turns to face the pointer,
+and `DIRECTION(Coll)` already hands back a normalized `[x, y]`.
+
+`DIRECTION(Coll)` re-picks the nearest member every tick. To chase ONE thing
+until you reach it, keep it in a property — `RANDOM(Coll)` gives the entity
+itself, not a number — and pass the property to the spatial macro:
+
+```gatherscript
+do:
+  if: entity.goal == 0
+    entity.goal = RANDOM(Foods)          // lock on to one snack
+  x += DIRECTION(goal).x * speed * dt    // follows that snack, wherever it goes
+  y += DIRECTION(goal).y * speed * dt
+  if: DISTANCE(goal) < 20
+    despawn: goal
+    entity.goal = 0                      // pick another next tick
+```
+
+A collection or entity name you wrote always wins over a property of the same
+name, and a property holding a plain number is not an entity (no direction,
+distance 99999, and a runtime warning). The same property steers a motion
+command (`push: TOWARD(goal) at 200`, `move: AWAY(goal) at 100`) and takes a
+write (`goal.hp -= 1` changes that snack).
+
+`CYCLE(Coll)`, `PINGPONG(Coll)` and `DEAL(Coll)` hand out the entity itself the
+same way (`next = CYCLE(Foods)`, then `next.x`, `DIRECTION(next)`,
+`despawn: next`); a list or range still gives plain values.
+
+## Traps
+
+- **Undeclared numeric properties default to 0.** No NaN, but also no error, so
+  a typo'd property name silently reads 0 forever. Spell-check your reads.
+- **An `applyScriptOps` update op replaces ALL properties.** Send the complete
+  set, not a diff, or you will delete the ones you left out.
+- **Sprites must exist.** `sprite: Duck` only works if `listUserSprites` shows a
+  sprite named exactly `Duck`. Names are upsert keys — a colliding import
+  becomes `Duck-2`.
+- **Indentation is structural** inside `do:` blocks. An unindented line after
+  `if:` is not in the branch.
+- **Case matters in names.** `watches: Enemies` must match the collection's
+  declared name.
+- **`omit: true` leaves a section out; `enabled: false` starts it off.**
+  `omit: true` on any section is "commented out" — the editor's gutter checkbox
+  writes it, and nothing can switch it back on. `enabled: false` keeps the
+  section in the game, switched off, until a script switches it on by name:
+  an Entity or Template spawns off (`Bridge.enabled = true`), a Camera doesn't
+  cut, a UI panel isn't drawn and takes no input (`Shop.enabled = true`), an
+  Observer doesn't run (`Gravity.enabled = true`), an Input maps no keys
+  (`Controls.enabled = true`), a Collection lists nothing (its members are
+  untouched) until `Walls.enabled = true`, an Import brings its sections in
+  off. `Walls.enabled = false` switches the COLLECTION; to switch every wall
+  off write `for: w in Walls` then `w.enabled = false`. Reading `X.enabled` on
+  anything that never set it is `true`. Config, Data, Map and Namespace have
+  nothing to switch off — use `omit: true` there.
+- **Sections that share a name group under it.** Two `# Entity: Lamp`s, a
+  mod's own `# Observer: Move` beside a switched-off imported one: both are in
+  the game. `Lamp.x`, `Lamp.y = 5`, `for: l in Lamp` and `COUNT(Lamp)` reach
+  the switched-on ones; `Lamp.enabled = …` reaches every one, on or off;
+  `tether: Hero` / `show: Shop` pick the switched-on one; `omit: true` takes a
+  section out of everything. Two switched-on templates, UI panels or
+  collections of one name are an error; a switched-off template beside a
+  switched-on one is simply not used by `spawn:`.
+- **Switch an entity off with `entity.enabled = false`, not `visible`.**
+  `Door.enabled = false` takes the door out of every collection: no observer or
+  own `do:` runs on it, nothing collides with it or finds it (`COUNT`,
+  `OVERLAP`, `COUNTAT`, `TOUCHING`), it isn't drawn and doesn't coast.
+  `Door.enabled = true` brings it back. Everything nested under it goes off
+  and comes back with it, and it takes no clicks (`HOVERING`/`CLICKED`...).
+  Reach it by name while it is off, or with a collection whose `where:`
+  mentions `enabled` (`where: tag is door and enabled is false`) — the only
+  kind that lists switched-off entities. `visible: false` / `hide:` is drawing
+  only: a hidden wall still blocks and a hidden button still takes clicks,
+  which is how an invisible wall or hotspot works.
+- **Only a write that reads `vx`/`vy`/`dt` takes over movement.** `x += vx * dt`
+  makes the engine skip the entity; a wrap (`x -= 1000`), teleport or `x += 5`
+  does not, and the engine keeps moving it.
+- **Disabling an observer does not stop a moving entity.** The engine owns
+  velocity integration: any entity with `vx`/`vy` has its `x`/`y` advanced every
+  tick by the runtime, not by your observer. So gating the observer that *applies*
+  velocity (`stopif:`, an `if:` guard, `every:` change) leaves the entity coasting
+  forever at its last speed. To freeze something you must zero the velocity —
+  `vx = 0` and `vy = 0` — or `reset: entity.vy` / `reset: entity` to clear the
+  whole physics state. Gate the observer *and* zero the velocity; the gate alone
+  is the trap. `validateScript` warns when a `stopif:`-gated observer drives
+  velocity and nothing in the script clears it.
+- **`RANDOM(a, b)` is a pick-list, never a range.** Comma always chooses from the
+  values you listed, at every arity: `RANDOM(1, 6)` gives 1 or 6, and
+  `RANDOM("red", "blue")` gives one of those words. For a random number *between*
+  two values use the `to` form — `RANDOM(1 to 6)`, `RANDOM(gapMin to gapMax)` —
+  which is also the only form that evaluates property refs: the comma form picks
+  the literal string `"gapMin"` (→ 0), silently producing garbage.
+  `validateScript` warns on both the property-ref comma form and the two-literal
+  comma pair (which used to mean a range).
+- **Build display text with `$` interpolation.** It is the house style:
+  `entity.text = "Score: $Game.score   Lives: $Game.lives"`. The string reads as
+  the sentence the player sees, and the spacing is visible instead of assembled
+  from arguments. A `$` takes a property, a dotted path (`$Players.first.name`,
+  `$Player.0.score`), a **macro call** (`"Stars left: $COUNT(Stars)"`), or any
+  expression in braces (`"${entity.hp / entity.maxHp * 100}%"`). `TEXT()` and `+`
+  still work and are equivalent — reach for them only when the creator's script
+  already uses them.
+- **`COUNT(Coll)` includes the current entity** when it is a member of that
+  collection. `if: COUNT(Enemies) == 0` is therefore a valid win condition even
+  from an observer watching `Enemies`; `COUNT(Coll) - 1` is "how many others".
+- **Probe a cell with `COUNTAT`, don't move to look.** Grid movement asks "is
+  there a wall in the next cell?":
+  `if: COUNTAT(Walls, entity.x + 32, entity.y) is 0` then step. It counts the
+  members covering that point (hidden ones too), never the entity asking;
+  `COUNTAT(Walls, x, y, w, h)` tests a box instead. Moving the entity, calling
+  `OVERLAP`, and moving it back is the old workaround. Don't write it.
+
+## Verifying
+
+`validateScript` catches structural and semantic errors. `debugStep` runs the
+world for N ticks headlessly and hands back a snapshot of real entity state —
+that is how you prove behavior. If entities aren't where you expected, read the
+snapshot before editing again.
